@@ -82,6 +82,9 @@ def _extract_metadata(url, format_str, audio_only=False):
         'skip_download': True,
         'format': format_str,
         'ffmpeg_location': FFMPEG_EXE,
+        'extractor_args': {
+            'youtube': ['player_client=ios,tv,web_embedded']
+        }
     }
     if not audio_only:
         opts['merge_output_format'] = 'mp4'
@@ -245,6 +248,9 @@ def analyze():
         'no_warnings': True,
         'extract_flat': False,
         'ffmpeg_location': FFMPEG_EXE,
+        'extractor_args': {
+            'youtube': ['player_client=ios,tv,web_embedded']
+        }
     }
 
     try:
