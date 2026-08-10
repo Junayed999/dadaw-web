@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dadaw - Video Downloader</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="container header-container">
+            <div class="logo">
+                <span class="logo-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M12 8V16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M8 12L12 16L16 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </span>
+                Dadaw
+            </div>
+            <nav class="nav">
+                <a href="#how-it-works">How it works</a>
+                <a href="#faq">FAQ</a>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Main Hero Section -->
+    <main class="hero">
+        <div class="container">
+            <div class="hero-content">
+                <h1 class="headline">Download videos, your way.</h1>
+                <p class="description">Paste a video URL and get high-quality download options in seconds.</p>
+                
+                <!-- Liquid Water Glass URL Container -->
+                <div class="liquid-container">
+                    <form id="analyze-form" class="url-form">
+                        <input type="text" id="url-input" class="url-input" placeholder="Paste video URL here..." required autocomplete="off">
+                        <button type="submit" id="analyze-btn" class="analyze-btn">
+                            <span class="btn-text">Analyze</span>
+                            <span class="btn-loader hidden">
+                                <svg class="spinner" viewBox="0 0 50 50">
+                                    <circle class="path" cx="25" cy="25" r="20" fill="none" stroke-width="5"></circle>
+                                </svg>
+                            </span>
+                        </button>
+                    </form>
+                    <div class="liquid-reflection"></div>
+                </div>
+                
+                <p class="helper-text">Supports YouTube, Twitter, Vimeo, and hundreds more through yt-dlp.</p>
+
+                <!-- Error Message Container -->
+                <div id="error-message" class="error-message hidden"></div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Results Section (Hidden initially) -->
+    <section id="results-section" class="results-section hidden">
+        <div class="container">
+            <div class="results-card">
+                <div class="video-info">
+                    <div class="thumbnail-wrapper">
+                        <img id="video-thumbnail" src="" alt="Video Thumbnail">
+                        <span id="video-duration" class="duration-badge"></span>
+                    </div>
+                    <div class="video-details">
+                        <h2 id="video-title" class="video-title"></h2>
+                        <p id="video-meta" class="video-meta"></p>
+                    </div>
+                </div>
+
+                <div class="download-options">
+                    <h3>Download Options</h3>
+                    <div id="options-list" class="options-list">
+                        <!-- Options injected via JS -->
+                    </div>
+                </div>
+                
+                <!-- Download Progress Area -->
+                <div id="progress-area" class="progress-area hidden">
+                    <div class="progress-header">
+                        <span id="progress-status">Downloading...</span>
+                        <span id="progress-percent">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                        <div id="progress-bar-fill" class="progress-bar-fill"></div>
+                    </div>
+                    <div class="progress-stats">
+                        <span id="progress-speed">--</span>
+                        <span id="progress-eta">--</span>
+                    </div>
+                    <p id="download-success" class="download-success hidden">Download complete! Check your browser downloads.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How it works -->
+    <section id="how-it-works" class="how-it-works">
+        <div class="container">
+            <h2 class="section-title">How it works</h2>
+            <div class="steps-grid">
+                <div class="step-card">
+                    <div class="step-number">01</div>
+                    <h3 class="step-title">Paste URL</h3>
+                    <p class="step-desc">Copy the link of the video you want to download and paste it into the search box above.</p>
+                </div>
+                <div class="step-card">
+                    <div class="step-number">02</div>
+                    <h3 class="step-title">Choose format</h3>
+                    <p class="step-desc">Select your preferred video quality or choose to download only the audio track.</p>
+                </div>
+                <div class="step-card">
+                    <div class="step-number">03</div>
+                    <h3 class="step-title">Download</h3>
+                    <p class="step-desc">Click download and the video will be processed and saved directly to your device.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ -->
+    <section id="faq" class="faq">
+        <div class="container">
+            <h2 class="section-title">Frequently Asked Questions</h2>
+            <div class="faq-list">
+                <div class="faq-item">
+                    <h4>What is this downloader?</h4>
+                    <p>Dadaw is a modern web interface powered by the robust open-source <strong>yt-dlp</strong> library. It allows you to download videos from hundreds of platforms easily.</p>
+                </div>
+                <div class="faq-item">
+                    <h4>Why isn't my URL working?</h4>
+                    <p>The video might be private, age-restricted, or hosted on a platform that is not currently supported by yt-dlp.</p>
+                </div>
+                <div class="faq-item">
+                    <h4>Why are some qualities unavailable?</h4>
+                    <p>We only show qualities that are actually available on the source platform. We cannot upscale a 720p video to 1080p.</p>
+                </div>
+                <div class="faq-item">
+                    <h4>Why is FFmpeg required for some downloads?</h4>
+                    <p>Many modern platforms (like YouTube) store high-quality video and audio separately. FFmpeg is used to merge these separate tracks into a single, high-quality file.</p>
+                </div>
+                <div class="faq-item">
+                    <h4>Does it support audio-only downloads?</h4>
+                    <p>Yes, you can select the "Audio Only" option to extract and download just the audio track.</p>
+                </div>
+                <div class="faq-item">
+                    <h4>Do I need an account?</h4>
+                    <p>No, there is no signup or login required to use this service.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2026 Dadaw Video Downloader. Powered by <a href="https://github.com/yt-dlp/yt-dlp" target="_blank">yt-dlp</a>.</p>
+            <p class="disclaimer">Please ensure you have the right to download and use the media according to the source platform's terms of service and applicable copyright laws.</p>
+        </div>
+    </footer>
+
+    <script src="/static/js/main.js"></script>
+</body>
+</html>
