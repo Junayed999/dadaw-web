@@ -111,17 +111,42 @@ class ExternalYouTubeProvider:
         if not video_id:
             raise RuntimeError("Could not extract YouTube video ID from the provided URL.")
         
-        api_url = os.environ.get('EXTERNAL_PROVIDER_URL', "https://pipedapi.kavin.rocks")
-        api_endpoint = f"{api_url.rstrip('/')}/streams/{video_id}"
+        api_url_env = os.environ.get('EXTERNAL_PROVIDER_URL')
+        
+        piped_instances = [
+            "https://pipedapi.kavin.rocks",
+            "https://pipedapi.tokhmi.xyz",
+            "https://pipedapi.moomoo.me",
+            "https://pipedapi.syncpundit.io",
+            "https://api-piped.mha.fi",
+            "https://piped-api.garudalinux.org",
+            "https://pipedapi.rivo.lol",
+            "https://pipedapi.leptons.xyz"
+        ]
+        
+        if api_url_env:
+            piped_instances.insert(0, api_url_env)
             
-        try:
-            response = requests.get(api_endpoint, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            if 'error' in data:
-                raise RuntimeError(data.get('message', data['error']))
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Piped API error: {str(e)}")
+        data = None
+        last_error = None
+        
+        for instance in piped_instances:
+            api_endpoint = f"{instance.rstrip('/')}/streams/{video_id}"
+            try:
+                response = requests.get(api_endpoint, timeout=5)
+                response.raise_for_status()
+                json_data = response.json()
+                if 'error' in json_data:
+                    last_error = json_data.get('message', json_data['error'])
+                    continue
+                data = json_data
+                break
+            except Exception as e:
+                last_error = str(e)
+                continue
+                
+        if not data:
+            raise RuntimeError(f"All configured Piped instances failed. Last error: {last_error}")
 
         info = {
             'title': data.get('title', 'Unknown Title'),
