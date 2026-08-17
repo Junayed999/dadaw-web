@@ -105,48 +105,131 @@ def extract_youtube_video_id(url):
     return match.group(1) if match else None
 
 class ExternalYouTubeProvider:
+    DEFAULT_PIPED_INSTANCES = [
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.tokhmi.xyz",
+        "https://pipedapi.moomoo.me",
+        "https://pipedapi.syncpundit.io",
+        "https://api-piped.mha.fi",
+        "https://piped-api.garudalinux.org",
+        "https://pipedapi.rivo.lol",
+        "https://pipedapi.leptons.xyz",
+        "https://piped-api.lunar.icu",
+        "https://ytapi.dc09.ru",
+        "https://pipedapi.colinslegacy.com",
+        "https://yapi.vyper.me",
+        "https://api.looleh.xyz",
+        "https://piped-api.cfe.re",
+        "https://pipedapi.r4fo.com",
+        "https://pipedapi-libre.kavin.rocks",
+        "https://piped-api.privacy.com.de",
+        "https://pipedapi.adminforge.de",
+        "https://api.piped.yt"
+    ]
+
+    @classmethod
+    def get_configured_instances(cls):
+        instances = []
+        env_instances = os.environ.get('PIPED_API_INSTANCES')
+        single_env = os.environ.get('EXTERNAL_PROVIDER_URL')
+        
+        if env_instances:
+            for item in env_instances.split(','):
+                item = item.strip()
+                if item and item not in instances:
+                    instances.append(item)
+                    
+        if single_env:
+            single_env = single_env.strip()
+            if single_env and single_env not in instances:
+                instances.insert(0, single_env)
+                
+        for inst in cls.DEFAULT_PIPED_INSTANCES:
+            if inst not in instances:
+                instances.append(inst)
+                
+        return instances
+
     @staticmethod
     def extract_info(url, format_str=None, audio_only=False, analyze_only=False):
         video_id = extract_youtube_video_id(url)
         if not video_id:
             raise RuntimeError("Could not extract YouTube video ID from the provided URL.")
         
-        api_url_env = os.environ.get('EXTERNAL_PROVIDER_URL')
-        
-        piped_instances = [
-            "https://pipedapi.kavin.rocks",
-            "https://pipedapi.tokhmi.xyz",
-            "https://pipedapi.moomoo.me",
-            "https://pipedapi.syncpundit.io",
-            "https://api-piped.mha.fi",
-            "https://piped-api.garudalinux.org",
-            "https://pipedapi.rivo.lol",
-            "https://pipedapi.leptons.xyz"
-        ]
-        
-        if api_url_env:
-            piped_instances.insert(0, api_url_env)
+        piped_instances = ExternalYouTubeProvider.get_configured_instances()
             
         data = None
-        last_error = None
-        
+        failure_summary = {}
+
         for instance in piped_instances:
             api_endpoint = f"{instance.rstrip('/')}/streams/{video_id}"
+            category = "Unknown Error"
             try:
-                response = requests.get(api_endpoint, timeout=5)
-                response.raise_for_status()
-                json_data = response.json()
-                if 'error' in json_data:
-                    last_error = json_data.get('message', json_data['error'])
+                response = requests.get(
+                    api_endpoint,
+                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'},
+                    timeout=6
+                )
+                
+                if response.status_code != 200:
+                    category = f"HTTP {response.status_code}"
+                    app.logger.warning(f"Piped instance {instance} returned {category}")
+                    failure_summary[category] = failure_summary.get(category, 0) + 1
                     continue
+
+                try:
+                    json_data = response.json()
+                except Exception as json_err:
+                    category = "Invalid JSON Response"
+                    app.logger.warning(f"Piped instance {instance} returned invalid JSON: {json_err}")
+                    failure_summary[category] = failure_summary.get(category, 0) + 1
+                    continue
+
+                if not isinstance(json_data, dict):
+                    category = "Non-dict JSON Payload"
+                    app.logger.warning(f"Piped instance {instance} payload is not a dict")
+                    failure_summary[category] = failure_summary.get(category, 0) + 1
+                    continue
+
+                if 'error' in json_data:
+                    err_msg = json_data.get('message', json_data['error'])
+                    category = f"API Error ({err_msg})"
+                    app.logger.warning(f"Piped instance {instance} reported API error: {err_msg}")
+                    failure_summary[category] = failure_summary.get(category, 0) + 1
+                    continue
+
+                video_streams = json_data.get('videoStreams', [])
+                audio_streams = json_data.get('audioStreams', [])
+                if not video_streams and not audio_streams:
+                    category = "No Stream Data"
+                    app.logger.warning(f"Piped instance {instance} contained no audio or video streams")
+                    failure_summary[category] = failure_summary.get(category, 0) + 1
+                    continue
+
                 data = json_data
+                app.logger.info(f"Successfully fetched streams from Piped instance: {instance}")
                 break
+
+            except requests.exceptions.Timeout:
+                category = "Timeout"
+                app.logger.warning(f"Piped instance {instance} timed out")
+                failure_summary[category] = failure_summary.get(category, 0) + 1
+            except requests.exceptions.SSLError:
+                category = "SSL Error"
+                app.logger.warning(f"Piped instance {instance} encountered SSL Error")
+                failure_summary[category] = failure_summary.get(category, 0) + 1
+            except requests.exceptions.ConnectionError:
+                category = "Connection Error"
+                app.logger.warning(f"Piped instance {instance} connection failed")
+                failure_summary[category] = failure_summary.get(category, 0) + 1
             except Exception as e:
-                last_error = str(e)
-                continue
+                category = f"Unexpected ({type(e).__name__})"
+                app.logger.warning(f"Piped instance {instance} failed with: {str(e)}")
+                failure_summary[category] = failure_summary.get(category, 0) + 1
                 
         if not data:
-            raise RuntimeError(f"All configured Piped instances failed. Last error: {last_error}")
+            summary_str = ", ".join([f"{cat}: {count}" for cat, count in failure_summary.items()])
+            raise RuntimeError(f"All configured Piped instances failed ({summary_str}). YouTube extraction is currently unavailable.")
 
         info = {
             'title': data.get('title', 'Unknown Title'),
