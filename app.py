@@ -9,6 +9,7 @@ from flask import Flask, request, jsonify, render_template, Response, stream_wit
 import yt_dlp
 from yt_dlp.utils import DownloadError
 from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
+import requests
 
 app = Flask(__name__)
 
@@ -74,19 +75,170 @@ def _mime_type(ext, audio_only=False):
 
 
 def _extract_metadata(url, format_str, audio_only=False):
-    opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'skip_download': True,
-        'format': format_str,
-        'extractor_args': {
-            'youtube': ['player_client=ios,tv,web_embedded']
+    provider = get_provider(url)
+    return provider.extract_info(url, format_str, audio_only=audio_only, analyze_only=False)
+
+class YTDLPProvider:
+    @staticmethod
+    def extract_info(url, format_str=None, audio_only=False, analyze_only=False):
+        opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'extractor_args': {
+                'youtube': ['player_client=ios,tv,web_embedded']
+            }
         }
-    }
-    if not audio_only:
-        opts['merge_output_format'] = 'mp4'
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        return ydl.extract_info(url, download=False)
+        
+        if analyze_only:
+            opts['extract_flat'] = False
+        else:
+            opts['format'] = format_str
+            if not audio_only:
+                opts['merge_output_format'] = 'mp4'
+                
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+
+def extract_youtube_video_id(url):
+    match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
+    return match.group(1) if match else None
+
+class ExternalYouTubeProvider:
+    @staticmethod
+    def extract_info(url, format_str=None, audio_only=False, analyze_only=False):
+        video_id = extract_youtube_video_id(url)
+        if not video_id:
+            raise RuntimeError("Could not extract YouTube video ID from the provided URL.")
+        
+        api_url = os.environ.get('EXTERNAL_PROVIDER_URL', "https://pipedapi.kavin.rocks")
+        api_endpoint = f"{api_url.rstrip('/')}/streams/{video_id}"
+            
+        try:
+            response = requests.get(api_endpoint, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            if 'error' in data:
+                raise RuntimeError(data.get('message', data['error']))
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Piped API error: {str(e)}")
+
+        info = {
+            'title': data.get('title', 'Unknown Title'),
+            'duration': data.get('duration', 0),
+            'uploader': data.get('uploader', 'Unknown Uploader'),
+            'thumbnail': data.get('thumbnailUrl', ''),
+            'extractor_key': 'youtube',
+            'formats': []
+        }
+        
+        video_streams = data.get('videoStreams', [])
+        audio_streams = data.get('audioStreams', [])
+        
+        for audio in audio_streams:
+            info['formats'].append({
+                'format_id': 'audio_' + str(audio.get('bitrate', 0)),
+                'url': audio.get('url'),
+                'ext': 'mp3' if 'mp3' in str(audio.get('codec')).lower() else 'm4a',
+                'vcodec': 'none',
+                'acodec': audio.get('codec'),
+                'http_headers': {'User-Agent': 'Mozilla/5.0'} 
+            })
+            
+        for video in video_streams:
+            height = 0
+            quality_str = video.get('quality', '')
+            if 'p' in quality_str:
+                try:
+                    height = int(quality_str.replace('p', ''))
+                except ValueError:
+                    pass
+                    
+            info['formats'].append({
+                'format_id': 'video_' + str(video.get('bitrate', 0)),
+                'url': video.get('url'),
+                'ext': 'mp4' if 'mp4' in str(video.get('mimeType')).lower() else 'webm',
+                'vcodec': video.get('codec'),
+                'acodec': 'none' if video.get('videoOnly') else 'unknown',
+                'height': height,
+                'http_headers': {'User-Agent': 'Mozilla/5.0'}
+            })
+            
+        if analyze_only:
+            return info
+            
+        if audio_only:
+            best_audio = max(audio_streams, key=lambda x: x.get('bitrate', 0)) if audio_streams else None
+            if not best_audio:
+                raise RuntimeError("No audio streams found via Piped.")
+            info['requested_formats'] = [{
+                'url': best_audio.get('url'),
+                'manifest_stream_number': 0,
+                'http_headers': {'User-Agent': 'Mozilla/5.0'}
+            }]
+            info['ext'] = 'mp3' if 'mp3' in str(best_audio.get('codec')).lower() else 'm4a'
+            return info
+            
+        target_height = float('inf')
+        if format_str and 'height<=' in format_str:
+            match = re.search(r'height<=(\d+)', format_str)
+            if match:
+                target_height = int(match.group(1))
+                
+        valid_videos = [v for v in video_streams if v.get('videoOnly') == True]
+        if not valid_videos:
+            valid_videos = video_streams
+            
+        valid_videos.sort(key=lambda x: x.get('bitrate', 0), reverse=True)
+        
+        best_video = None
+        for v in valid_videos:
+            quality_str = v.get('quality', '')
+            height = 0
+            if 'p' in quality_str:
+                try:
+                    height = int(quality_str.replace('p', ''))
+                except: pass
+            if height <= target_height:
+                best_video = v
+                break
+                
+        if not best_video and valid_videos:
+            best_video = valid_videos[-1] 
+            
+        best_audio = max(audio_streams, key=lambda x: x.get('bitrate', 0)) if audio_streams else None
+        
+        if best_video and best_audio and best_video.get('videoOnly'):
+            info['requested_formats'] = [
+                {
+                    'url': best_video.get('url'),
+                    'manifest_stream_number': 0,
+                    'http_headers': {'User-Agent': 'Mozilla/5.0'}
+                },
+                {
+                    'url': best_audio.get('url'),
+                    'manifest_stream_number': 1,
+                    'http_headers': {'User-Agent': 'Mozilla/5.0'}
+                }
+            ]
+            info['ext'] = 'mp4'
+        elif best_video:
+            info['requested_formats'] = [{
+                'url': best_video.get('url'),
+                'manifest_stream_number': 0,
+                'http_headers': {'User-Agent': 'Mozilla/5.0'}
+            }]
+            info['ext'] = 'mp4'
+        else:
+            raise RuntimeError("No suitable video stream found via Piped.")
+            
+        return info
+
+def get_provider(url):
+    youtube_domains = ['youtube.com', 'youtu.be', 'm.youtube.com', 'music.youtube.com']
+    if any(domain in url.lower() for domain in youtube_domains):
+        return ExternalYouTubeProvider()
+    return YTDLPProvider()
 
 
 
@@ -249,47 +401,39 @@ def analyze():
     if not url:
         return jsonify({'error': 'URL is required'}), 400
 
-    opts = {
-        'quiet': True,
-        'skip_download': True,
-        'no_warnings': True,
-        'extract_flat': False,
-        'extractor_args': {
-            'youtube': ['player_client=ios,tv,web_embedded']
-        }
-    }
-
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        provider = get_provider(url)
+        info = provider.extract_info(url, analyze_only=True)
 
-            title = info.get('title', 'Unknown Title')
-            thumbnail = info.get('thumbnail')
-            duration = info.get('duration')
-            uploader = info.get('uploader')
-            extractor = info.get('extractor_key')
+        title = info.get('title', 'Unknown Title')
+        thumbnail = info.get('thumbnail')
+        duration = info.get('duration')
+        uploader = info.get('uploader')
+        extractor = info.get('extractor_key')
 
-            resolutions = set()
-            for f in info.get('formats', []):
-                h = f.get('height')
-                if h and h >= 360:
-                    resolutions.add(h)
+        resolutions = set()
+        for f in info.get('formats', []):
+            h = f.get('height')
+            if h and h >= 360:
+                resolutions.add(h)
 
-            sorted_res = sorted(list(resolutions), reverse=True)
-            if not sorted_res:
-                sorted_res = ['Best Available']
+        sorted_res = sorted(list(resolutions), reverse=True)
+        if not sorted_res:
+            sorted_res = ['Best Available']
 
-            return jsonify({
-                'title': title,
-                'thumbnail': thumbnail,
-                'duration': duration,
-                'uploader': uploader,
-                'platform': extractor,
-                'resolutions': sorted_res
-            })
+        return jsonify({
+            'title': title,
+            'thumbnail': thumbnail,
+            'duration': duration,
+            'uploader': uploader,
+            'platform': extractor,
+            'resolutions': sorted_res
+        })
 
     except DownloadError as e:
         return jsonify({'error': f'Failed to process URL: {str(e)}'}), 400
+    except RuntimeError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception:
         return jsonify({'error': 'An unexpected error occurred.'}), 500
 
