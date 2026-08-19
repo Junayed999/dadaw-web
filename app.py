@@ -11,7 +11,25 @@ from yt_dlp.utils import DownloadError
 from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
 import requests
 
+import base64
+
 app = Flask(__name__)
+
+COOKIE_FILE_PATH = '/tmp/youtube_cookies.txt'
+
+def _init_youtube_cookies():
+    cookie_b64 = os.environ.get('YOUTUBE_COOKIES_BASE64')
+    if cookie_b64:
+        try:
+            cookie_data = base64.b64decode(cookie_b64).decode('utf-8')
+            with open(COOKIE_FILE_PATH, 'w') as f:
+                f.write(cookie_data)
+            os.chmod(COOKIE_FILE_PATH, 0o600)
+            app.logger.info("Successfully loaded YouTube cookies from environment variable.")
+        except Exception as e:
+            app.logger.error(f"Failed to initialize YouTube cookies: {type(e).__name__}. Check if base64 is valid.")
+
+_init_youtube_cookies()
 
 STREAM_CHUNK_SIZE = 65536
 
@@ -75,8 +93,7 @@ def _mime_type(ext, audio_only=False):
 
 
 def _extract_metadata(url, format_str, audio_only=False):
-    provider = get_provider(url)
-    return provider.extract_info(url, format_str, audio_only=audio_only, analyze_only=False)
+    return YTDLPProvider.extract_info(url, format_str, audio_only=audio_only, analyze_only=False)
 
 class YTDLPProvider:
     @staticmethod
@@ -90,6 +107,9 @@ class YTDLPProvider:
             }
         }
         
+        if os.path.exists(COOKIE_FILE_PATH):
+            opts['cookiefile'] = COOKIE_FILE_PATH
+        
         if analyze_only:
             opts['extract_flat'] = False
         else:
@@ -100,253 +120,7 @@ class YTDLPProvider:
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
 
-def extract_youtube_video_id(url):
-    match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
-    return match.group(1) if match else None
 
-class ExternalYouTubeProvider:
-    DEFAULT_PIPED_INSTANCES = [
-        "https://pipedapi.kavin.rocks",
-        "https://pipedapi.tokhmi.xyz",
-        "https://pipedapi.moomoo.me",
-        "https://pipedapi.syncpundit.io",
-        "https://api-piped.mha.fi",
-        "https://piped-api.garudalinux.org",
-        "https://pipedapi.rivo.lol",
-        "https://pipedapi.leptons.xyz",
-        "https://piped-api.lunar.icu",
-        "https://ytapi.dc09.ru",
-        "https://pipedapi.colinslegacy.com",
-        "https://yapi.vyper.me",
-        "https://api.looleh.xyz",
-        "https://piped-api.cfe.re",
-        "https://pipedapi.r4fo.com",
-        "https://pipedapi-libre.kavin.rocks",
-        "https://piped-api.privacy.com.de",
-        "https://pipedapi.adminforge.de",
-        "https://api.piped.yt"
-    ]
-
-    @classmethod
-    def get_configured_instances(cls):
-        instances = []
-        env_instances = os.environ.get('PIPED_API_INSTANCES')
-        single_env = os.environ.get('EXTERNAL_PROVIDER_URL')
-        
-        if env_instances:
-            for item in env_instances.split(','):
-                item = item.strip()
-                if item and item not in instances:
-                    instances.append(item)
-                    
-        if single_env:
-            single_env = single_env.strip()
-            if single_env and single_env not in instances:
-                instances.insert(0, single_env)
-                
-        for inst in cls.DEFAULT_PIPED_INSTANCES:
-            if inst not in instances:
-                instances.append(inst)
-                
-        return instances
-
-    @staticmethod
-    def extract_info(url, format_str=None, audio_only=False, analyze_only=False):
-        video_id = extract_youtube_video_id(url)
-        if not video_id:
-            raise RuntimeError("Could not extract YouTube video ID from the provided URL.")
-        
-        piped_instances = ExternalYouTubeProvider.get_configured_instances()
-            
-        data = None
-        failure_summary = {}
-
-        for instance in piped_instances:
-            api_endpoint = f"{instance.rstrip('/')}/streams/{video_id}"
-            category = "Unknown Error"
-            try:
-                response = requests.get(
-                    api_endpoint,
-                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'},
-                    timeout=6
-                )
-                
-                if response.status_code != 200:
-                    category = f"HTTP {response.status_code}"
-                    app.logger.warning(f"Piped instance {instance} returned {category}")
-                    failure_summary[category] = failure_summary.get(category, 0) + 1
-                    continue
-
-                try:
-                    json_data = response.json()
-                except Exception as json_err:
-                    category = "Invalid JSON Response"
-                    app.logger.warning(f"Piped instance {instance} returned invalid JSON: {json_err}")
-                    failure_summary[category] = failure_summary.get(category, 0) + 1
-                    continue
-
-                if not isinstance(json_data, dict):
-                    category = "Non-dict JSON Payload"
-                    app.logger.warning(f"Piped instance {instance} payload is not a dict")
-                    failure_summary[category] = failure_summary.get(category, 0) + 1
-                    continue
-
-                if 'error' in json_data:
-                    err_msg = json_data.get('message', json_data['error'])
-                    category = f"API Error ({err_msg})"
-                    app.logger.warning(f"Piped instance {instance} reported API error: {err_msg}")
-                    failure_summary[category] = failure_summary.get(category, 0) + 1
-                    continue
-
-                video_streams = json_data.get('videoStreams', [])
-                audio_streams = json_data.get('audioStreams', [])
-                if not video_streams and not audio_streams:
-                    category = "No Stream Data"
-                    app.logger.warning(f"Piped instance {instance} contained no audio or video streams")
-                    failure_summary[category] = failure_summary.get(category, 0) + 1
-                    continue
-
-                data = json_data
-                app.logger.info(f"Successfully fetched streams from Piped instance: {instance}")
-                break
-
-            except requests.exceptions.Timeout:
-                category = "Timeout"
-                app.logger.warning(f"Piped instance {instance} timed out")
-                failure_summary[category] = failure_summary.get(category, 0) + 1
-            except requests.exceptions.SSLError:
-                category = "SSL Error"
-                app.logger.warning(f"Piped instance {instance} encountered SSL Error")
-                failure_summary[category] = failure_summary.get(category, 0) + 1
-            except requests.exceptions.ConnectionError:
-                category = "Connection Error"
-                app.logger.warning(f"Piped instance {instance} connection failed")
-                failure_summary[category] = failure_summary.get(category, 0) + 1
-            except Exception as e:
-                category = f"Unexpected ({type(e).__name__})"
-                app.logger.warning(f"Piped instance {instance} failed with: {str(e)}")
-                failure_summary[category] = failure_summary.get(category, 0) + 1
-                
-        if not data:
-            summary_str = ", ".join([f"{cat}: {count}" for cat, count in failure_summary.items()])
-            raise RuntimeError(f"All configured Piped instances failed ({summary_str}). YouTube extraction is currently unavailable.")
-
-        info = {
-            'title': data.get('title', 'Unknown Title'),
-            'duration': data.get('duration', 0),
-            'uploader': data.get('uploader', 'Unknown Uploader'),
-            'thumbnail': data.get('thumbnailUrl', ''),
-            'extractor_key': 'youtube',
-            'formats': []
-        }
-        
-        video_streams = data.get('videoStreams', [])
-        audio_streams = data.get('audioStreams', [])
-        
-        for audio in audio_streams:
-            info['formats'].append({
-                'format_id': 'audio_' + str(audio.get('bitrate', 0)),
-                'url': audio.get('url'),
-                'ext': 'mp3' if 'mp3' in str(audio.get('codec')).lower() else 'm4a',
-                'vcodec': 'none',
-                'acodec': audio.get('codec'),
-                'http_headers': {'User-Agent': 'Mozilla/5.0'} 
-            })
-            
-        for video in video_streams:
-            height = 0
-            quality_str = video.get('quality', '')
-            if 'p' in quality_str:
-                try:
-                    height = int(quality_str.replace('p', ''))
-                except ValueError:
-                    pass
-                    
-            info['formats'].append({
-                'format_id': 'video_' + str(video.get('bitrate', 0)),
-                'url': video.get('url'),
-                'ext': 'mp4' if 'mp4' in str(video.get('mimeType')).lower() else 'webm',
-                'vcodec': video.get('codec'),
-                'acodec': 'none' if video.get('videoOnly') else 'unknown',
-                'height': height,
-                'http_headers': {'User-Agent': 'Mozilla/5.0'}
-            })
-            
-        if analyze_only:
-            return info
-            
-        if audio_only:
-            best_audio = max(audio_streams, key=lambda x: x.get('bitrate', 0)) if audio_streams else None
-            if not best_audio:
-                raise RuntimeError("No audio streams found via Piped.")
-            info['requested_formats'] = [{
-                'url': best_audio.get('url'),
-                'manifest_stream_number': 0,
-                'http_headers': {'User-Agent': 'Mozilla/5.0'}
-            }]
-            info['ext'] = 'mp3' if 'mp3' in str(best_audio.get('codec')).lower() else 'm4a'
-            return info
-            
-        target_height = float('inf')
-        if format_str and 'height<=' in format_str:
-            match = re.search(r'height<=(\d+)', format_str)
-            if match:
-                target_height = int(match.group(1))
-                
-        valid_videos = [v for v in video_streams if v.get('videoOnly') == True]
-        if not valid_videos:
-            valid_videos = video_streams
-            
-        valid_videos.sort(key=lambda x: x.get('bitrate', 0), reverse=True)
-        
-        best_video = None
-        for v in valid_videos:
-            quality_str = v.get('quality', '')
-            height = 0
-            if 'p' in quality_str:
-                try:
-                    height = int(quality_str.replace('p', ''))
-                except: pass
-            if height <= target_height:
-                best_video = v
-                break
-                
-        if not best_video and valid_videos:
-            best_video = valid_videos[-1] 
-            
-        best_audio = max(audio_streams, key=lambda x: x.get('bitrate', 0)) if audio_streams else None
-        
-        if best_video and best_audio and best_video.get('videoOnly'):
-            info['requested_formats'] = [
-                {
-                    'url': best_video.get('url'),
-                    'manifest_stream_number': 0,
-                    'http_headers': {'User-Agent': 'Mozilla/5.0'}
-                },
-                {
-                    'url': best_audio.get('url'),
-                    'manifest_stream_number': 1,
-                    'http_headers': {'User-Agent': 'Mozilla/5.0'}
-                }
-            ]
-            info['ext'] = 'mp4'
-        elif best_video:
-            info['requested_formats'] = [{
-                'url': best_video.get('url'),
-                'manifest_stream_number': 0,
-                'http_headers': {'User-Agent': 'Mozilla/5.0'}
-            }]
-            info['ext'] = 'mp4'
-        else:
-            raise RuntimeError("No suitable video stream found via Piped.")
-            
-        return info
-
-def get_provider(url):
-    youtube_domains = ['youtube.com', 'youtu.be', 'm.youtube.com', 'music.youtube.com']
-    if any(domain in url.lower() for domain in youtube_domains):
-        return ExternalYouTubeProvider()
-    return YTDLPProvider()
 
 
 
@@ -510,8 +284,7 @@ def analyze():
         return jsonify({'error': 'URL is required'}), 400
 
     try:
-        provider = get_provider(url)
-        info = provider.extract_info(url, analyze_only=True)
+        info = YTDLPProvider.extract_info(url, analyze_only=True)
 
         title = info.get('title', 'Unknown Title')
         thumbnail = info.get('thumbnail')
